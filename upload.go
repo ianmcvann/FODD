@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -34,6 +35,35 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 
 			//if part.FileName() is empty, skip this iteration.
 			if part.FileName() == "" {
+				continue
+			}
+			runtime.GOMAXPROCS(runtime.NumCPU())
+
+			// open the uploaded file
+
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+
+			buff := make([]byte, 512) // why 512 bytes ? see http://golang.org/pkg/net/http/#DetectContentType
+			_, err = part.Read(buff)
+
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+
+			filetype := http.DetectContentType(buff)
+
+			fmt.Println(filetype)
+
+			switch filetype {
+			case "image/jpeg", "image/jpg", "image/png":
+				fmt.Println(filetype)
+			default:
+				fmt.Println("unknown file type uploaded")
+				fmt.Fprint(w, "Unknown file type. Please upload a png, jpg, jpeg, or csv.")
 				continue
 			}
 			dst, err := os.Create("uploaded-images/" + strings.ToLower(part.FileName()))
