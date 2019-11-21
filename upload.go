@@ -1,11 +1,14 @@
 package main
 
 import (
-	L "./lib"
+	"compress/flate"
 	"fmt"
-	"io/ioutil"
+	"github.com/gorilla/mux"
+	"github.com/mholt/archiver"
+	"io"
+	"log"
 	"net/http"
-	"path/filepath"
+	"os"
 	"strings"
 )
 
@@ -14,55 +17,68 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 
 	// Parse our multipart form, 10 << 20 specifies a maximum
 	// upload of 10 MB files.
-	r.ParseMultipartForm(10 << 20)
-	// FormFile returns the first file for the given key `myFile`
-	// it also returns the FileHeader so we can get the Filename,
-	// the Header and the size of the file
-	file, handler, err := r.FormFile("myFile")
-	if err != nil {
-		fmt.Println("Error Retrieving the File")
-		fmt.Println(err)
-		return
-	}
-	defer file.Close()
-	fmt.Printf("Uploaded File: %+v\n", handler.Filename)
-	fmt.Printf("File Size: %+v\n", handler.Size)
-	fmt.Printf("MIME Header: %+v\n", handler.Header)
+	if r.Method == "POST" {
+		reader, err := r.MultipartReader()
 
-	file_path := strings.ToLower(filepath.Ext(handler.Filename))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	if file_path != ".png" && file_path != ".jpg" && file_path != ".csv" {
+		//copy each part to destination.
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
 
-		fmt.Println("File Deleted")
-		fmt.Fprintf(w, "File was not a png, jpg, or csv. Please reupload.\n")
-		return
-	}
-	// Create a temporary file within our temp-images directory that follows
-	// a particular naming pattern
-	upload_file_path := "upload-*" + filepath.Ext(handler.Filename)
-	tempFile, err := ioutil.TempFile("uploaded-images", upload_file_path)
-	if err != nil {
-		fmt.Println(err)
-	}
-	defer tempFile.Close()
+			//if part.FileName() is empty, skip this iteration.
+			if part.FileName() == "" {
+				continue
+			}
+			dst, err := os.Create("uploaded-images/" + strings.ToLower(part.FileName()))
+			defer dst.Close()
 
-	// read all of the contents of our uploaded file into a
-	// byte array
-	fileBytes, err := ioutil.ReadAll(file)
-	if err != nil {
-		fmt.Println(err)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			if _, err := io.Copy(dst, part); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 	}
-	// write this byte array to our temporary file
-	tempFile.Write(fileBytes)
-	// return that we have successfully uploaded our file!
-	fmt.Fprintf(w, "Successfully Uploaded File\n")
-	L.ScanFolder()
-	//F
 }
+func ReturnFile(writer http.ResponseWriter, req *http.Request) {
+	z := archiver.Zip{
+		CompressionLevel:       flate.DefaultCompression,
+		MkdirAll:               true,
+		SelectiveCompression:   true,
+		ContinueOnError:        false,
+		OverwriteExisting:      false,
+		ImplicitTopLevelFolder: false,
+	}
+	files := []string{
+		"uploaded-images",
+	}
 
+	err := z.Archive(files, "dataset.zip")
+	if err != nil {
+		log.Fatal(err)
+	}
+	writer.Header().Set("Content-Disposition", "attachment; filename=dataset.zip")
+	writer.Header().Set("Content-type", "application/zip")
+	http.ServeFile(writer, req, "dataset.zip")
+	//delete file from server once it has been served
+	defer os.Remove("dataset.zip")
+}
 func setupRoutes() {
-	http.HandleFunc("/upload", uploadFile)
-	http.ListenAndServe(":8080", nil)
+	router := mux.NewRouter()
+	router.HandleFunc("/upload", uploadFile)
+	router.HandleFunc("/download/zip", ReturnFile)
+	http.ListenAndServe(":8080", router)
 }
 
 func main() {
